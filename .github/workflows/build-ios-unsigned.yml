@@ -1,0 +1,61 @@
+name: Build unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out project
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.38.7
+          channel: stable
+          cache: true
+
+      - name: Restore environment file
+        env:
+          ENV_FILE_BASE64: ${{ secrets.ENV_FILE_BASE64 }}
+        run: |
+          if [ -z "$ENV_FILE_BASE64" ]; then
+            echo "Missing ENV_FILE_BASE64 repository secret."
+            exit 1
+          fi
+          printf '%s' "$ENV_FILE_BASE64" | openssl base64 -d -A > .env
+          for key in SUPABASE_URL SUPABASE_ANON_KEY MAPBOX_ACCESS_TOKEN MAPS_PLATFORM_KEY LOCATION_SHARE_BASE_URL; do
+            if ! grep -q "^${key}=." .env; then
+              echo "The restored .env file is missing ${key}."
+              exit 1
+            fi
+          done
+
+      - name: Prepare iOS build
+        run: |
+          flutter config --enable-swift-package-manager
+          flutter pub get
+          sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = 13.0;/IPHONEOS_DEPLOYMENT_TARGET = 14.0;/g' ios/Runner.xcodeproj/project.pbxproj
+
+      - name: Build unsigned iOS application
+        run: flutter build ios --release --no-codesign --build-number=${{ github.run_number }}
+
+      - name: Package IPA
+        run: |
+          mkdir -p build/ios/unsigned/Payload
+          cp -R build/ios/iphoneos/Runner.app build/ios/unsigned/Payload/
+          cd build/ios/unsigned
+          ditto -c -k --sequesterRsrc --keepParent Payload Para-unsigned.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Para-unsigned-iOS
+          path: build/ios/unsigned/Para-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 3
+
